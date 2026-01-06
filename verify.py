@@ -1,127 +1,150 @@
 import json
-import hashlib
+import base64
 import requests
 import hvac
-import base64
+import hashlib
+import paramiko
 from web3 import Web3
-from eth_account import Account
 
 # ==========================================
-# ⚙️ CONFIGURATION
+#  CONFIGURATION (CHECK!)
 # ==========================================
+# 1. Blockchain Config
 RPC_URL = "http://127.0.0.1:8545"
-# PASTE THE CORRECT ADDRESS FROM agent.py HERE:
 CONTRACT_ADDRESS = "0x5FbDB2315678afecb367f032d93F642f64180aa3" 
 
-# Vault Config
+# 2. Vault Config
 VAULT_URL = "http://127.0.0.1:8200"
 VAULT_TOKEN = "PASTE VAULT ROOT TOKEN HERE" 
-KEY_NAME = "log-master-key"
+
+# 3. IPFS Gateway
+IPFS_GATEWAY = "https://gateway.pinata.cloud/ipfs/"
+
+# 4. VM SSH BILGILERI
+VM_IP = "192.168.145.130"
+VM_USER = "USER NAME FOR UBUNTU"
+VM_PASS = "1"  
+LOG_FILE_PATH = "/var/ossec/logs/alerts/alerts.json"
 
 # ==========================================
-
+# HELPER FUNCTIONS
+# ==========================================
 def calculate_sha256(data):
     return hashlib.sha256(data.encode('utf-8')).hexdigest()
 
-def get_log_from_blockchain(log_id):
-    """Blockchain'den metadata'yı okur."""
+def get_local_raw_line(log_id):
+    client = None
+    try:
+        search_id = log_id.replace("wazuh-", "")
+        print(f"    Connecting to {VM_IP} to search for ID: {search_id}...")
+        
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(VM_IP, username=VM_USER, password=VM_PASS, timeout=5)
+        
+        cmd = f"grep '\"id\":\"{search_id}\"' {LOG_FILE_PATH}"
+        stdin, stdout, stderr = client.exec_command(cmd)
+        
+        result = stdout.read().decode().strip()
+        client.close()
+        
+        return result 
+
+    except Exception as e:
+        print(f" SSH Error: {e}")
+        if client: client.close()
+        return None
+
+# ==========================================
+# MAIN FUNCTION
+# ==========================================
+def verify_log_integrity(log_id_to_check):
+    print(f"\n Verifying Log ID: {log_id_to_check}...")
+
+    # --- 1. BLOCKCHAIN CHECK (METADATA) ---
     w3 = Web3(Web3.HTTPProvider(RPC_URL))
-    
-    with open("artifacts/contracts/LogNotary.sol/LogNotary.json", "r") as f:
-        contract_abi = json.load(f)["abi"]
-    
-    contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=contract_abi)
-    
-    # Call the getLog function 
-    # Return: (sourceId, logHash, ipfsCid, timestamp)
-    return contract.functions.getLog(log_id).call()
-
-def download_from_ipfs(cid):
-    """IPFS Gateway üzerinden şifreli dosyayı indirir."""
-    # We can use Pinata's public gateway or public gateway
-    gateway_url = f"https://gateway.pinata.cloud/ipfs/{cid}"
-    print(f" 🌐 Downloading from IPFS: {gateway_url}")
-    
     try:
-        response = requests.get(gateway_url, timeout=10)
-        if response.status_code == 200:
-            return response.text # Returns ciphertext
-        else:
-            # Let's try an alternative gateway (sometimes pinata gateway can be slow)
-            print("   (Pinata gateway slow, trying ipfs.io...)")
-            response = requests.get(f"https://ipfs.io/ipfs/{cid}", timeout=10)
-            if response.status_code == 200:
-                return response.text
-            else:
-                raise Exception("Could not download from IPFS gateways.")
-    except Exception as e:
-        # If we cannot pull from the internet (Gateway issues), manual entry may be required for local testing 
-        # But we're throwing errors for now.
-        raise Exception(f"IPFS Download Error: {e}")
-
-def decrypt_with_vault(ciphertext, log_id): # log_id parametresi eklendi
-    """Vault kullanarak o loga özel anahtarla şifreyi çözer."""
-    client = hvac.Client(url=VAULT_URL, token=VAULT_TOKEN)
-    
-    # Derive key name from Log ID
-    unique_key_name = f"key-{log_id}"
-    
-    decrypt_response = client.secrets.transit.decrypt_data(
-        name=unique_key_name,  # Dinamik isim
-        ciphertext=ciphertext
-    )
-    
-    plaintext_b64 = decrypt_response['data']['plaintext']
-    return base64.b64decode(plaintext_b64).decode('utf-8')
-
-# ==========================================
-# MAIN AUDIT PROCESS
-# ==========================================
-if __name__ == "__main__":
-    print("🕵️‍♂️ Starting Auditor Verification Tool...")
-    
-    #WE ASK FOR LOG ID FROM THE USER 
-    # You will enter the ID you just generated here. Ex: log-1767314122
-    target_log_id = input("\n👉 Enter Log ID to verify: ")
-    
-    try:
-        # 1. Blockchain Query
-        print(f"\n🔗 Querying Blockchain for {target_log_id}...")
-        record = get_log_from_blockchain(target_log_id)
+        with open("artifacts/contracts/LogNotary.sol/LogNotary.json", "r") as f:
+            contract_abi = json.load(f)["abi"]
+        contract = w3.eth.contract(address=CONTRACT_ADDRESS, abi=contract_abi)
+        log_data = contract.functions.getLog(log_id_to_check).call()
         
-        source_id = record[0]
-        bc_hash = record[1]
-        bc_cid = record[2]
-        timestamp = record[3]
+        ipfs_cid = None
+        stored_blockchain_hash = None
         
-        print(f"    Found Record!")
-        print(f"      Source: {source_id}")
-        print(f"      Hash (On-Chain): {bc_hash}")
-        print(f"      CID (On-Chain):  {bc_cid}")
-        print(f"      Time: {timestamp}")
-        
-        # 2. IPFS Download
-        print(f"\nPg Fetching Data from IPFS...")
-        encrypted_data = download_from_ipfs(bc_cid)
-        print(f"    Encrypted Data: {encrypted_data[:40]}...")
-        
-        # 3. Decryption (Vault)
-        print(f"\n Decrypting via Vault...")
-        decrypted_log = decrypt_with_vault(encrypted_data, target_log_id)
-        print(f"    Decrypted Content: {decrypted_log}")
-        
-        # 4. Verification
-        print(f"\n  Verifying Integrity...")
-        current_hash = calculate_sha256(decrypted_log)
-        
-        print(f"   Calculated Hash: {current_hash}")
-        print(f"   Blockchain Hash: {bc_hash}")
-        
-        if current_hash == bc_hash:
-            print("\n INTEGRITY CONFIRMED! The log is authentic and unaltered.")
-        else:
-            print("\n INTEGRITY FAILURE! The log has been tampered with!")
+        # Extract Hash and CID from Tuple
+        for item in log_data:
+            if str(item).startswith("Qm"): ipfs_cid = item
+            elif len(str(item)) == 64: stored_blockchain_hash = item
             
+        if not ipfs_cid: 
+            print(" Log ID not found on Blockchain.")
+            return
+
     except Exception as e:
-        print(f"\n Error during verification: {e}")
-        print("Note: If IPFS download fails, it might be due to gateway latency. Wait a minute and try again.")
+        print(f" Blockchain Error: {e}")
+        return
+
+    # --- 2. IPFS & VAULT (GDPR & DECRYPTION CHECK) ---
+    print(f"    Fetching encrypted data from IPFS...")
+    try:
+        response = requests.get(f"{IPFS_GATEWAY}{ipfs_cid}")
+        if response.status_code != 200:
+            print(" IPFS Fetch failed.")
+            return
+            
+        encrypted_data = response.text
+        client = hvac.Client(url=VAULT_URL, token=VAULT_TOKEN)
+        key_name = f"key-{log_id_to_check}"
+        
+        # --- KRİTİK NOKTA: DECRYPTION & GDPR ---
+        try:
+            decrypt_response = client.secrets.transit.decrypt_data(
+                name=key_name, 
+                ciphertext=encrypted_data
+            )
+            # If it's here, it means the code has been cracked (The key is still there).
+            plaintext_b64 = decrypt_response['data']['plaintext']
+            blockchain_log_text = base64.b64decode(plaintext_b64).decode('utf-8')
+            
+            print(f"    Blockchain Record Verified (Readable).")
+            print(f"    CONTENT: {blockchain_log_text}")
+
+        except hvac.exceptions.InvalidPath:
+            # We end up here if Vault gives a "No such key" error.
+            print("\n ACCESS DENIED (GDPR COMPLIANCE)")
+            print("===========================================================")
+            print("     DATA IS UNREADABLE: DECRYPTION KEY DELETED.")
+            print("   This log has been 'Crypto-Shredded' in accordance with")
+            print("   Right to be Forgotten (Unutulma Hakkı).")
+            print("===========================================================")
+            return # If there is no content, the integrity check cannot be performed, log out.
+
+    except Exception as e:
+        print(f" Decryption Error: {e}")
+        return
+
+    # --- 3. LOCAL FILE CHECK & HASH COMPARISON (TAMPER CHECK) ---
+    print("\n Comparing Cryptographic Hashes (Math Check)...")
+    
+    local_raw_line = get_local_raw_line(log_id_to_check)
+    
+    if local_raw_line:
+        # CALCULATE HASH (RAW DATA)
+        local_calculated_hash = calculate_sha256(local_raw_line)
+        
+        print(f"    Blockchain Hash: {stored_blockchain_hash}")
+        print(f"    Local Raw Hash:  {local_calculated_hash}")
+        
+        if stored_blockchain_hash == local_calculated_hash:
+            print("\n MATCH! The raw log line is 100% authentic.")
+        else:
+            print("\n TAMPER DETECTED! HASH MISMATCH! 🚨")
+            print("   The local file content has been modified.")
+            
+    else:
+        print(" Local log entry not found via SSH.")
+
+if __name__ == "__main__":
+    target_id = input("Enter Log ID to verify: ")
+    verify_log_integrity(target_id.strip())

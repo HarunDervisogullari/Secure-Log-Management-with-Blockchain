@@ -2,62 +2,52 @@ import hvac
 import sys
 
 # ==========================================
-# SETTINGS
+#  CONFIGURATION
 # ==========================================
 VAULT_URL = "http://127.0.0.1:8200"
-VAULT_TOKEN = "PASTE VAULT ROOT TOKEN HERE" # Don't forget to update if the token has changed
-# We removed the KEY_NAME constant because it is now determined dynamically.
-# ==========================================
+VAULT_TOKEN = "PASTE VAULT ROOT TOKEN HERE" # <--- KONTROL ET
 
-def delete_key():
+def crypto_shred_log(log_id):
+    # Log ID cleanup (correct if the wazuh prefix exists or is missing)
+    clean_id = log_id.strip()
+    key_name = f"key-{clean_id}"
+
+    print(f"\n  Initiating Crypto-Shredding for Log ID: {clean_id}")
+    print(f"    Target Key: {key_name}")
+
     client = hvac.Client(url=VAULT_URL, token=VAULT_TOKEN)
-    
+
     if not client.is_authenticated():
-        print(" Vault Authentication Failed.")
-        sys.exit(1)
-
-    print("\n  GDPR RIGHT TO BE FORGOTTEN TOOL (SURGICAL DELETION)")
-    print("-" * 60)
-
-    # STEP 1: Ask User for Log ID to be Deleted
-    target_log_id = input(" Enter the Log ID to be deleted. (Ex: log-1767...): ").strip()
-    
-    if not target_log_id:
-        print(" Error: Log ID cannot be empty.")
-        sys.exit(1)
-
-    # Derive key name from naming logic in agent.py
-    unique_key_name = f"key-{target_log_id}"
-
-    print(f"\n  WARNING: The encryption key named '{unique_key_name}' will be DELETED from the Vault.")
-    print(f"    This process only renders the log with ID '{target_log_id}' unreadable.")
-    print("    Other logs are unaffected.")
-    
-    confirm = input("\nThis action is irreversible. Are you sure? (yes/no): ")
-    if confirm.lower() != "yes":
-        print("The transaction has been cancelled.")
-        sys.exit(0)
+        print(" Vault Authentication Failed. Check token.")
+        return
 
     try:
-        # STEP 2: First we turn on the deletion permission (Deletion Allowed)
-        print(f" 🔓 Deletion permission is being granted for'{unique_key_name}' ...")
+        # Check if the key exists (If not, it has already been deleted)
+        try:
+            client.secrets.transit.read_key(name=key_name)
+        except hvac.exceptions.InvalidPath:
+            print(f"  Key '{key_name}' not found. It might have been already deleted.")
+            return
+
+        # Unlock "Safety Unlock"
         client.secrets.transit.update_key_configuration(
-            name=unique_key_name,
+            name=key_name,
             deletion_allowed=True
         )
+        print(f"    Key unlocked for deletion...")
 
-        # STEP 3: Now we delete that log private key
-        client.secrets.transit.delete_key(name=unique_key_name)
+        # Now Delete (Permanently Delete)
+        client.secrets.transit.delete_key(name=key_name)
         
-        print(f"\n SUCCESSFUL: '{unique_key_name}' has been permanently destroyed.")
-        print("    The relevant log data can no longer be recovered mathematically..")
-        print("    (GDPR Article 17 Requirement Met)")
-        
-    except hvac.exceptions.InvalidPath:
-        print(f"\n Error: A key named '{unique_key_name}' could not be found in Vault.")
-        print("    Make sure you have entered the Log ID correctly.")
+        print("-------------------------------------------------------------")
+        print(f"    SUCCESS: Key '{key_name}' PERMANENTLY DELETED.")
+        print("     GDPR COMPLIANCE: The data on Blockchain is now unreadable.")
+        print("    Right to be Forgotten (Unutulma Hakkı) Applied.")
+        print("-------------------------------------------------------------")
+
     except Exception as e:
-        print(f"\n Unexpected Error: {e}")
+        print(f" Error during shredding process: {e}")
 
 if __name__ == "__main__":
-    delete_key()
+    target_id = input("Enter Log ID to DELETE (Warning: Irreversible!): ")
+    crypto_shred_log(target_id)

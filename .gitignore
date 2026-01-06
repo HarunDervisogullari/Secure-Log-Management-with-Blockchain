@@ -1,18 +1,47 @@
+# --- DEPENDENCIES ---
 node_modules
 .env
 
-# Hardhat files
+# --- PYTHON (NEW: Must Be Added) ---
+# Python compilation and cache files (should not be on GitHub)
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Python Virtual Env folders
+venv/
+.venv/
+env/
+.env/
+
+# --- HARDHAT FILES ---
 /cache
 /artifacts
 
-# TypeChain files
+# --- TYPECHAIN ​​---
 /typechain
 /typechain-types
 
-# solidity-coverage files
+# --- COVERAGE ---
 /coverage
 /coverage.json
 
-# Hardhat Ignition default folder for deployments against a local node
+# --- HARDHAT IGNITION ---
 ignition/deployments/chain-31337
+
+# --- OS & IDE FILES (System Files) ---
+# Windows and Mac unnecessary files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor settings (VSCode / PyCharm) - Optional
+.vscode/
+.idea/
+
+# --- PROJECT SPECIFIC ---
+# If you downloaded log files for testing purposes, do not send them
+*.log
+temp_*.json
 *.exe
